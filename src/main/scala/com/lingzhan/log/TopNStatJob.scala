@@ -1,5 +1,6 @@
 package com.lingzhan.log
 
+import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.{DataFrame, SparkSession}
 
@@ -104,20 +105,56 @@ object TopNStatJob {
 
     import spark.implicits._
 
-    val cityAccessTopNStatDF=df.filter($"cmsType" === "video" && $"day" === "20170511")
+    val cityAccessTopNStatDF = df.filter($"cmsType" === "video" && $"day" === "20170511")
       .groupBy($"cmsId", $"day", $"city")
       .agg(count($"cmsId").as("times"))
-      .orderBy("city","times")
+      .orderBy("city", "times")
 
     //窗口函数在spark sql中的应用
+    val cityAccessTopNStatDF1 = cityAccessTopNStatDF.select(
+      cityAccessTopNStatDF("day"),
+      cityAccessTopNStatDF("city"),
+      cityAccessTopNStatDF("cmsId"),
+      cityAccessTopNStatDF("times"),
+      //按city列进行分区
+      row_number().over(Window.partitionBy(cityAccessTopNStatDF("city"))
+        .orderBy(cityAccessTopNStatDF("times").desc)
+      ).as("times_rank")
+
+    ).filter($"times_rank" <= 3)
+
+    // cityAccessTopNStatDF.show(false)
+
+    /**
+      * 将统计结果写入到Mysql中
+      */
+
+    try {
+
+      cityAccessTopNStatDF1.foreachPartition(partitionOfRecords => {
+        val list = new ListBuffer[DayCityAccessStat]
+
+        partitionOfRecords.foreach(record => {
+
+          val day = record.getAs[String]("day")
+          val city = record.getAs[String]("city")
+          val cmsId = record.getAs[Long]("cmsId")
+          val times = record.getAs[Long]("times")
+          val times_rank = record.getAs[Int]("times_rank")
+
+          list.append(new DayCityAccessStat(day, city, cmsId, times, times_rank))
+        })
+
+        StatDAO.insertDayCityAccessTopN(list)
+      })
 
 
+    } catch {
+      case e: Exception => e.printStackTrace()
+    }
 
-
-    cityAccessTopNStatDF.show(false)
 
   }
-
 
 
 }
